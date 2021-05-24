@@ -19,6 +19,67 @@
 inline unsigned int intDivCeil(const unsigned int &a, const unsigned int &b) { return ( a%b != 0 ) ? (a/b+1) : (a/b); }
 
 
+
+__device__ int get_4bits(const int &a, const bool &is_round, const int &val_shift) {
+
+    int h;
+    bool is_round_up;
+
+    if (val_shift == 4) {
+        h = a & S4_MASK1;
+
+        if (is_round) {
+            is_round_up = IS_ROUND_UP(a, S4_OP5_IS_RND_1, S4_OP5_RND_BIT_1);
+            h += (is_round_up) ? ((a & S4_OP5_RND_BIT_1) << 1) : 0;
+            h = (h == S4_OP5_OVRFLW_1) ? S4_MASK1 : h;
+        }
+    }
+    else if (val_shift == 3) {
+        h = a & S4_MASK2;
+
+        if (is_round) {
+            is_round_up = IS_ROUND_UP(a, S4_OP5_IS_RND_2, S4_OP5_RND_BIT_2);
+            h += (is_round_up) ? ((a & S4_OP5_RND_BIT_2) << 1) : 0;
+            h = (h == S4_OP5_OVRFLW_2) ? S4_MASK2 : h;
+        }
+    }
+    else if (val_shift == 2) {
+        h = a & S4_MASK3;
+
+        if (is_round) {
+            is_round_up = IS_ROUND_UP(a, S4_OP5_IS_RND_3, S4_OP5_RND_BIT_3);
+            h += (is_round_up) ? ((a & S4_OP5_RND_BIT_3) << 1) : 0;
+            h = (h == S4_OP5_OVRFLW_3) ? S4_MASK3 : h;
+        }
+    }
+    else if (val_shift == 1) {
+        h = a & S4_MASK4;
+
+        if (is_round) {
+            is_round_up = IS_ROUND_UP(a, S4_OP5_IS_RND_4, S4_OP5_RND_BIT_4);
+            h += (is_round_up) ? ((a & S4_OP5_RND_BIT_4) << 1) : 0;
+            h = (h == S4_OP5_OVRFLW_4) ? S4_MASK4 : h;
+        }
+    }
+    else {
+        h = a & S4_MASK5;
+    }
+
+    return h;
+}
+
+
+__device__ int get_4bits_shift(const int &a) {
+    bool set1 = a & S4_OP5_SET_1;
+    bool set2 = a & S4_OP5_SET_2;
+    bool set3 = a & S4_OP5_SET_3;
+    bool set4 = a & S4_OP5_SET_4;
+
+    return (set1) ? 4 : (set2) ? 3 : (set3) ? 2 : (set4) ? 1 : 0;
+}
+
+
+
 __device__ int find_4bits_2op(const int &a, const bool &is_round) {
     bool set1 = a & S4_OP2_SET_1;
     
@@ -247,25 +308,30 @@ __global__ void gemm_48_opt(
 
     scalar_t psum = 0;
 
+    int group_sz = 256;
+
     if (row < C.size(0) && col < C.size(1)){
-        for (int k = 0; k < A.size(1); k++) {
-            float a_1, b_1;
+        for (int k = 0; k < A.size(1); k += group_sz) {
 
-            a_1 = A[row][k];
-            b_1 = B[col][k];
-            
-            int a1 = a_1;
-            int b1 = b_1;
-            int h1;
+            int sv_max = 0;
 
-            // Checking quantization is fine
-            assert((a1 < 256) && (a1 >= 0));
-            assert((b1 <= 127) && (b1 >= -128));
+            for (int eee = 0; eee < group_sz; eee++) {
+                float a = (k + eee < A.size(1)) ? A[row][k + eee] : 0;
+                int sv = get_4bits_shift(a);
+                sv_max = MAX(sv, sv_max);
+            }
 
-            // Trim and round each activation
-            h1 = find_bits_slice(a1, is_round, 4, shift_opt);
-                
-            psum += h1 * b1;
+            for (int eee = 0; eee < group_sz; eee++) {
+                float a = (k + eee < A.size(1)) ? A[row][k + eee] : 0;
+                float b = (k + eee < A.size(1)) ? B[col][k + eee] : 0;
+
+                assert((a < 256) && (a >= 0));
+                assert((b <= 127) && (b >= -128));
+
+                int h = get_4bits(a, is_round, sv_max);
+
+                psum += h * b;
+            }
         }
 
         C[row][col] = psum;

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import cu_gemm_quant
 import Config as cfg
+import matplotlib.pyplot as plt
 
 
 class RoundSTE(torch.autograd.Function):
