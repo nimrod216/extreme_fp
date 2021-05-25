@@ -43,7 +43,7 @@ class UnfoldConv2d(nn.Conv2d):
         self._is_round = None
         self._shift_opt = None
         self._bit_group = None
-        self._is_stc = False
+        self._group_sz = None
 
     def _reset_stats(self, d):
         for k, v in d.items():
@@ -123,7 +123,7 @@ class UnfoldConv2d(nn.Conv2d):
             assert (self._is_round is not None)
             assert (self._shift_opt is not None)
             assert (self._bit_group is not None)
-            assert (self._is_stc is not None)
+            assert (self._group_sz is not None)
 
             # Im2col
             x_unf = nn.functional.unfold(x_q,
@@ -153,7 +153,7 @@ class UnfoldConv2d(nn.Conv2d):
 
             # Custom CUDA kernel
             data_tensor = cu_gemm_quant.run(_x_unf.contiguous(), _w_unf.contiguous(),
-                                           self._is_round, self._shift_opt, self._bit_group, self._is_stc)
+                                           self._is_round, self._shift_opt, self._bit_group, self._group_sz)
 
             data_tensor = data_tensor[0]
             data_tensor = data_tensor.reshape(x_unf.size(0),
@@ -174,9 +174,9 @@ class UnfoldConv2d(nn.Conv2d):
         key.append('unfold')
         val.append(self._unfold)
 
-        key.extend(['is_round', 'shift_opt', 'bit_group', 'stc'])
+        key.extend(['is_round', 'shift_opt', 'bit_group', 'group_sz'])
         if self._unfold:
-            val.extend([self._is_round, self._shift_opt, self._bit_group, self._is_stc])
+            val.extend([self._is_round, self._shift_opt, self._bit_group, self._group_sz])
         else:
             val.extend(['-', '-', '-', '-'])
 

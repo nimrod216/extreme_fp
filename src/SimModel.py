@@ -50,9 +50,9 @@ class SimModel(nn.Module):
         for l in self.unfold_list:
             l._bit_group = v
 
-    def set_stc(self, v):
+    def set_group_sz(self, v):
         for l in self.unfold_list:
-            l._is_stc = v
+            l._group_sz = v
 
     def print_config(self):
         headers = None

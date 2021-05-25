@@ -10,7 +10,7 @@ std::vector<torch::Tensor> gemm_48_opt_cuda(
 	torch::Tensor b,
     const bool is_round,
     const int shift_opt,
-    const bool is_stc);
+    const int group_sz);
 
 
 std::vector<torch::Tensor> gemm_48_opt_bitgroup_cuda(
@@ -19,7 +19,7 @@ std::vector<torch::Tensor> gemm_48_opt_bitgroup_cuda(
     const bool is_round,
     const int shift_opt,
     const int bit_group,
-    const bool is_stc);
+    const int group_sz);
 
 // C++ interface
 
@@ -35,12 +35,12 @@ std::vector<torch::Tensor> gemm_nbsmt_48_opt_aux(
     const bool is_round,
     const int shift_opt,
     const int bit_group,
-    const bool is_stc) {
+    const int group_sz) {
 
     CHECK_INPUT(a);
     CHECK_INPUT(b);
     if (bit_group == 0 || bit_group == 4){     
-        return gemm_48_opt_cuda(a, b, is_round, shift_opt, is_stc);
+        return gemm_48_opt_cuda(a, b, is_round, shift_opt, group_sz);
     }else{
         int shift_sets;
         if(bit_group == 3){
@@ -50,7 +50,7 @@ std::vector<torch::Tensor> gemm_nbsmt_48_opt_aux(
         }else{
             assert(0);
         }
-        return gemm_48_opt_bitgroup_cuda(a, b, is_round, shift_sets, bit_group, is_stc);
+        return gemm_48_opt_bitgroup_cuda(a, b, is_round, shift_sets, bit_group, group_sz);
     }
 }
 

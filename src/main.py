@@ -38,8 +38,8 @@ parser.add_argument('--shift_opt', choices=[5, 3, 2], default=5, type=int,
                     help='choose the number of window placement options (default: 5)')
 parser.add_argument('--bit_group', choices=[4, 3, 2], default=4, type=int,
                     help='window size (default: 4)')
-parser.add_argument('--stc', action='store_true',
-                    help='correlate the weights to the activation preprocessing')
+parser.add_argument('--group_sz', default=1, type=int,
+                    help='grouping')
 parser.add_argument('--gpu', nargs='+', default=None,
                     help='GPU to run on (default: 0)')
 parser.add_argument('-v', '--verbosity', default=0, type=int,
@@ -76,7 +76,7 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
 
 
 def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bits=None,
-              unfold=True, is_round=None, shift_opt=None, bit_group=None, stc=False,
+              unfold=True, is_round=None, shift_opt=None, bit_group=None, group_sz=False,
               skip_bn_recal=False, desc=None):
 
     # Get test string ready
@@ -86,15 +86,15 @@ def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bit
     name_str = name_str + '_round' if unfold and is_round else name_str + '_raw'
     name_str = name_str + '_sOpt-{}'.format(shift_opt) if unfold else name_str
     name_str = name_str + '_bGrp-{}'.format(bit_group) if unfold else name_str
-    name_str = name_str + '_stc' if unfold and stc else name_str
+    name_str = name_str + '_grpSZ-{}'.format(group_sz) if unfold else name_str
     name_str = name_str + '_noBN' if skip_bn_recal else name_str
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
     name_str = name_str + '_seed-{}-{}'.format(cfg.SEED_TORCH, cfg.SEED_NP)
 
     # Start log
     cfg.LOG.start_new_log(name=name_str)
-    cfg.LOG.write('desc={}, x_bits={}, w_bits={}, unfold={}, is_round={}, stc={}, skip_bn_recal={}'
-                  .format(desc, x_bits, w_bits, unfold, is_round, stc, skip_bn_recal))
+    cfg.LOG.write('desc={}, x_bits={}, w_bits={}, unfold={}, is_round={}, group_sz={}, skip_bn_recal={}'
+                  .format(desc, x_bits, w_bits, unfold, is_round, group_sz, skip_bn_recal))
 
     # Init neural net
     nn = NeuralNet(arch, dataset, model_chkp=model_chkp)
@@ -106,7 +106,7 @@ def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bit
     nn.model.set_round(is_round)
     nn.model.set_shift_opt(shift_opt)
     nn.model.set_bit_group(bit_group)
-    nn.model.set_stc(stc)
+    nn.model.set_group_sz(group_sz)
     nn.model.set_min_max_update(False)
 
     # Print configuration
@@ -164,7 +164,7 @@ def main():
                   model_chkp=model_chkp,
                   x_bits=args.x_bits, w_bits=args.w_bits,
                   unfold=args.eval, is_round=(args.round_mode == 'ROUND'),
-                  shift_opt=args.shift_opt, bit_group=args.bit_group, stc=args.stc,
+                  shift_opt=args.shift_opt, bit_group=args.bit_group, group_sz=args.group_sz,
                   skip_bn_recal=args.skip_bn_recal, desc=args.desc)
 
     return

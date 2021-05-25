@@ -294,7 +294,7 @@ __global__ void gemm_48_opt(
     torch::PackedTensorAccessor32<scalar_t, 2, torch::RestrictPtrTraits> C,
     const bool is_round,
     const int shift_opt,
-    const bool is_stc,
+    const int group_sz,
     torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> stats) {
 
     int bx = blockIdx.x;
@@ -307,8 +307,6 @@ __global__ void gemm_48_opt(
     int col = blockDim.y * by + ty;
 
     scalar_t psum = 0;
-
-    int group_sz = 256;
 
     if (row < C.size(0) && col < C.size(1)){
         for (int k = 0; k < A.size(1); k += group_sz) {
@@ -347,7 +345,7 @@ __global__ void gemm_48_opt_bitgroup(
     const bool is_round,
     const int shift_opt,
     const int bit_group,
-    const bool is_stc,
+    const int group_sz,
     torch::PackedTensorAccessor32<float, 3, torch::RestrictPtrTraits> stats) {
 
     int bx = blockIdx.x;
@@ -391,7 +389,7 @@ std::vector<torch::Tensor> gemm_48_opt_cuda(
 	torch::Tensor b,
     const bool is_round,
     const int shift_opt,
-    const bool is_stc) {
+    const int group_sz) {
 
     torch::Device device = torch::kCUDA;
 
@@ -409,7 +407,7 @@ std::vector<torch::Tensor> gemm_48_opt_cuda(
           output.packed_accessor32<scalar_t, 2, torch::RestrictPtrTraits>(),
           is_round,
           shift_opt,
-          is_stc,
+          group_sz,
           stats.packed_accessor32<float, 3, torch::RestrictPtrTraits>()
         );
     }));
@@ -430,7 +428,7 @@ std::vector<torch::Tensor> gemm_48_opt_bitgroup_cuda(
     const bool is_round,
     const int shift_opt,
     const int bit_group,
-    const bool is_stc) {
+    const int group_sz) {
 
     torch::Device device = torch::kCUDA;
 
@@ -449,7 +447,7 @@ std::vector<torch::Tensor> gemm_48_opt_bitgroup_cuda(
           is_round,
           shift_opt,
           bit_group,
-          is_stc,
+          group_sz,
           stats.packed_accessor32<float, 3, torch::RestrictPtrTraits>()
         );
     }));
