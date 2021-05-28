@@ -21,9 +21,10 @@ class SimModel(nn.Module):
         if type(m) == UnfoldConv2d:
             self.unfold_list.append(m)
 
-    def set_unfold(self, v):
+    def set_sparq(self, v_x, v_w):
         for l in self.unfold_list:
-            l._unfold = v
+            l._sparq_x = v_x
+            l._sparq_w = v_w
 
     def set_quantize(self, v):
         for l in self.unfold_list:
@@ -46,13 +47,15 @@ class SimModel(nn.Module):
         for l in self.unfold_list:
             l._shift_opt = v
 
-    def set_bit_group(self, v):
+    def set_bit_group(self, v_x, v_w):
         for l in self.unfold_list:
-            l._bit_group = v
+            l._bit_group_x = v_x
+            l._bit_group_w = v_w
 
-    def set_group_sz(self, v):
+    def set_group_sz(self, v_x, v_w):
         for l in self.unfold_list:
-            l._group_sz = v
+            l._group_sz_x = v_x
+            l._group_sz_w = v_w
 
     def print_config(self):
         headers = None

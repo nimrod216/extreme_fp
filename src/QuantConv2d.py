@@ -31,9 +31,6 @@ class UnfoldConv2d(nn.Conv2d):
         # Even if in training mode, the user can disable gathering the tensor min-max values
         self._disable_min_max_update = False
 
-        # If user set unfold to True then he is probably want the custom CUDA kernel as well
-        self._unfold = False
-
         # Quantization variables
         self._quantize = False
         self._x_bits = 8
@@ -42,8 +39,12 @@ class UnfoldConv2d(nn.Conv2d):
         # Custom kernel variables
         self._is_round = None
         self._shift_opt = None
-        self._bit_group = None
-        self._group_sz = None
+        self._bit_group_x = None
+        self._bit_group_w = None
+        self._group_sz_x = None
+        self._group_sz_w = None
+        self._sparq_x = None
+        self._sparq_w = None
 
     def _reset_stats(self, d):
         for k, v in d.items():
@@ -84,14 +85,14 @@ class UnfoldConv2d(nn.Conv2d):
                 raise NotImplementedError
 
             # Weights quantization
-            weight_q, weight_q_delta = \
+            w_q, w_q_delta = \
                 self._uniform_symmetric_quantization_per_filter(self.weight,
                                                                 self.weight.data.min(dim=3)[0].min(dim=2)[0].min(dim=1)[0],
                                                                 self.weight.data.max(dim=3)[0].max(dim=2)[0].max(dim=1)[0],
                                                                 self._w_bits)
 
-            weight_q = weight_q.int().float()   # Just in case
-            assert (weight_q.max() <= ((2 ** self._w_bits) / 2 - 1) and weight_q.min() >= (-2 ** self._w_bits) / 2)
+            w_q = w_q.int().float()   # Just in case
+            assert (w_q.max() <= ((2 ** self._w_bits) / 2 - 1) and w_q.min() >= (-2 ** self._w_bits) / 2)
 
             # Bias quantization
             if self.bias is None:
@@ -108,12 +109,12 @@ class UnfoldConv2d(nn.Conv2d):
         else:
             # The single scalar movement to CUDA may be bad for performance
             x_q, x_q_delta = x, torch.Tensor([1]).cuda()
-            weight_q, weight_q_delta = self.weight, torch.Tensor([1]).cuda()
+            w_q, w_q_delta = self.weight, torch.Tensor([1]).cuda()
             bias_fp = self.bias
 
-        if not self._unfold:
+        if not self._sparq_x and not self._sparq_w:
             out = nn.functional.conv2d(x_q * x_q_delta,
-                                       weight_q * weight_q_delta[:, None, None, None].expand_as(weight_q),
+                                       w_q * w_q_delta[:, None, None, None].expand_as(w_q),
                                        bias=bias_fp,
                                        stride=(self.stride[0], self.stride[1]),
                                        padding=(self.padding[0], self.padding[1]), groups=self.groups)
@@ -121,47 +122,78 @@ class UnfoldConv2d(nn.Conv2d):
             # At the moment, unfold and quantization must go together
             assert (self._quantize is True)
             assert (self._is_round is not None)
-            assert (self._shift_opt is not None)
-            assert (self._bit_group is not None)
-            assert (self._group_sz is not None)
+            assert (self._shift_opt == 5)
 
-            # Im2col
-            x_unf = nn.functional.unfold(x_q,
-                                         kernel_size=(self.kernel_size[0], self.kernel_size[1]),
-                                         padding=(self.padding[0], self.padding[1]),
-                                         stride=(self.stride[0], self.stride[1])).transpose(1, 2)
-            w_unf = weight_q.view(self.weight.size(0), -1).t()
+            if self._sparq_x:
+                # C-W-H ordering
+                x_q = x_q.permute(0, 2, 3, 1)
 
-            ofmap_height = \
-                int((x.size(2) + 2 * self.padding[0] - self.kernel_size[0] + self.stride[0]) / self.stride[0])
-            ofmap_width = \
-                int((x.size(3) + 2 * self.padding[1] - self.kernel_size[1] + self.stride[1]) / self.stride[1])
+                x_sl = torch.where(x_q >= 2 ** 7, torch.ones_like(x_q) * 4, torch.zeros_like(x_q))
+                x_sl = x_sl + torch.where((x_q < 2 ** 7) & (x_q >= 2 ** 6), torch.ones_like(x_q) * 3, torch.zeros_like(x_q))
+                x_sl = x_sl + torch.where((x_q < 2 ** 6) & (x_q >= 2 ** 5), torch.ones_like(x_q) * 2, torch.zeros_like(x_q))
+                x_sl = x_sl + torch.where((x_q < 2 ** 5) & (x_q >= 2 ** 4), torch.ones_like(x_q) * 1, torch.zeros_like(x_q))
 
-            # C-W-H ordering
-            x_unf_r = x_unf.reshape(x_unf.size(0) * x_unf.size(1), x_unf.size(2))
-            _x_unf = x_unf_r.reshape((x_unf_r.size(0),
-                                      int(x_unf_r.size(1) / (self.weight.size(2) * self.weight.size(3))),
-                                      self.weight.size(2) * self.weight.size(3)))
-            _x_unf = _x_unf.permute((0, 2, 1))
-            _x_unf = _x_unf.reshape_as(x_unf_r)
+                x_sl = x_sl.flatten()
+                x_sl = x_sl.reshape([int(x_sl.size(0) / self._group_sz_x), self._group_sz_x])
+                x_sl_max = x_sl.max(dim=1)[0]
+                x_sl_max = x_sl_max[:, None].expand_as(x_sl)
+                x_sl_max = (2 ** x_sl_max).reshape_as(x_q)
 
-            _w_unf = w_unf.t().reshape((self.weight.size(0),
-                                        int(w_unf.size(0) / (self.weight.size(2) * self.weight.size(3))),
-                                        self.weight.size(2) * self.weight.size(3)))
-            _w_unf = _w_unf.permute(0, 2, 1)
-            _w_unf = _w_unf.reshape_as(w_unf.t())
+                if self._is_round:
+                    x_q = torch.round(x_q / x_sl_max) * x_sl_max
 
-            # Custom CUDA kernel
-            data_tensor = cu_gemm_quant.run(_x_unf.contiguous(), _w_unf.contiguous(),
-                                           self._is_round, self._shift_opt, self._bit_group, self._group_sz)
+                    x_q = torch.where((x_sl_max == 16) & (x_q == 256), torch.ones_like(x_q) * 240, x_q)
+                    x_q = torch.where((x_sl_max == 8) & (x_q == 128), torch.ones_like(x_q) * 120, x_q)
+                    x_q = torch.where((x_sl_max == 4) & (x_q == 64), torch.ones_like(x_q) * 60, x_q)
+                    x_q = torch.where((x_sl_max == 2) & (x_q == 32), torch.ones_like(x_q) * 30, x_q)
+                    x_q = torch.where((x_sl_max == 1) & (x_q == 16), torch.ones_like(x_q) * 15, x_q)
+                else:
+                    x_q = torch.floor(x_q / x_sl_max) * x_sl_max
 
-            data_tensor = data_tensor[0]
-            data_tensor = data_tensor.reshape(x_unf.size(0),
-                                              int(data_tensor.size(0) / x_unf.size(0)), data_tensor.size(1))
+                x_q = x_q.permute(0, 3, 1, 2)
 
-            out_unf = data_tensor.transpose(1, 2)
-            out = nn.functional.fold(out_unf, (ofmap_height, ofmap_width), (1, 1))
-            out = out * x_q_delta * weight_q_delta[None, :, None, None].expand_as(out) + (0 if bias_fp is None else bias_fp[None, :, None, None])
+                x_sl = x_sl_max = None
+
+            if self._sparq_w:
+                # N-W-H order
+                w_q = w_q.permute(0, 2, 3, 1)
+
+                w_sl = torch.where((w_q.abs() >= 2 ** 6), torch.ones_like(w_q) * 4, torch.zeros_like(w_q))
+                w_sl = w_sl + torch.where((w_q.abs() < 2 ** 6) & (w_q.abs() >= 2 ** 5), torch.ones_like(w_q) * 3, torch.zeros_like(w_q))
+                w_sl = w_sl + torch.where((w_q.abs() < 2 ** 5) & (w_q.abs() >= 2 ** 4), torch.ones_like(w_q) * 2, torch.zeros_like(w_q))
+                w_sl = w_sl + torch.where((w_q.abs() < 2 ** 4) & (w_q.abs() >= 2 ** 3), torch.ones_like(w_q) * 1, torch.zeros_like(w_q))
+                # TODO: is it precise with the signed numbers?
+
+                # self._group_sz_w = self.weight.size(2) * self.weight.size(3)
+
+                w_sl = w_sl.flatten()
+                w_sl = w_sl.reshape([int(w_sl.size(0) / self._group_sz_w), self._group_sz_w])
+                w_sl_max = w_sl.max(dim=1)[0]
+                w_sl_max = w_sl_max[:, None].expand_as(w_sl)
+                w_sl_max = (2 ** w_sl_max).reshape_as(w_q)
+
+                if self._is_round:
+                    w_q = torch.round(w_q / w_sl_max) * w_sl_max
+
+                    w_q = torch.where((w_sl_max == 16) & (w_q == 128), torch.ones_like(w_q) * 112, w_q)
+                    w_q = torch.where((w_sl_max == 8) & (w_q == 64), torch.ones_like(w_q) * 56, w_q)
+                    w_q = torch.where((w_sl_max == 4) & (w_q == 32), torch.ones_like(w_q) * 28, w_q)
+                    w_q = torch.where((w_sl_max == 2) & (w_q == 16), torch.ones_like(w_q) * 14, w_q)
+                    w_q = torch.where((w_sl_max == 1) & (w_q == 8), torch.ones_like(w_q) * 7, w_q)
+                    # TODO: handle overflows
+                else:
+                    w_q = torch.floor(w_q / w_sl_max) * w_sl_max
+
+                # Back to W-H-N order
+                w_q = w_q.permute(0, 3, 1, 2)
+
+                w_sl = w_sl_max = None
+
+            out = nn.functional.conv2d(x_q * x_q_delta,
+                                       w_q * w_q_delta[:, None, None, None].expand_as(w_q),
+                                       bias=bias_fp,
+                                       stride=(self.stride[0], self.stride[1]),
+                                       padding=(self.padding[0], self.padding[1]), groups=self.groups)
 
         return out
 
@@ -171,14 +203,17 @@ class UnfoldConv2d(nn.Conv2d):
         key.extend(['quant', 'x_b', 'w_b'])
         val.extend([self._quantize, self._x_bits, self._w_bits])
 
-        key.append('unfold')
-        val.append(self._unfold)
+        key.extend(['sparq_x', 'sparq_w'])
+        val.extend([self._sparq_x, self._sparq_w])
 
-        key.extend(['is_round', 'shift_opt', 'bit_group', 'group_sz'])
-        if self._unfold:
-            val.extend([self._is_round, self._shift_opt, self._bit_group, self._group_sz])
-        else:
-            val.extend(['-', '-', '-', '-'])
+        key.extend(['is_round', 'shift_opt'])
+        val.extend([self._is_round, self._shift_opt]) if self._sparq_x or self._sparq_w else val.extend(['-', '-'])
+
+        key.extend(['bit_grp_x', 'grp_sz_x'])
+        val.extend([self._bit_group_x, self._group_sz_x]) if self._sparq_x else val.extend(['-', '-'])
+
+        key.extend(['bit_grp_w', 'grp_sz_w'])
+        val.extend([self._bit_group_w, self._group_sz_w]) if self._sparq_w else val.extend(['-', '-'])
 
         return key, val
 
