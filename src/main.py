@@ -69,7 +69,6 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
     nn.model.set_quantize(True)
     nn.model.set_quantization_bits(x_bits, w_bits)
     nn.model.set_min_max_update(True)
-    nn.model.set_unfold(False)
 
     nn.best_top1_acc = 0
     nn.next_train_epoch = 0
