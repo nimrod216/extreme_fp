@@ -143,10 +143,10 @@ class UnfoldConv2d(nn.Conv2d):
                     x_q = torch.round(x_q / x_sl_max) * x_sl_max
 
                     x_q = torch.where((x_sl_max == 16) & (x_q == 256), torch.ones_like(x_q) * 240, x_q)
-                    x_q = torch.where((x_sl_max == 8) & (x_q == 128), torch.ones_like(x_q) * 120, x_q)
-                    x_q = torch.where((x_sl_max == 4) & (x_q == 64), torch.ones_like(x_q) * 60, x_q)
-                    x_q = torch.where((x_sl_max == 2) & (x_q == 32), torch.ones_like(x_q) * 30, x_q)
-                    x_q = torch.where((x_sl_max == 1) & (x_q == 16), torch.ones_like(x_q) * 15, x_q)
+                    #x_q = torch.where((x_sl_max == 8) & (x_q == 128), torch.ones_like(x_q) * 120, x_q)
+                    #x_q = torch.where((x_sl_max == 4) & (x_q == 64), torch.ones_like(x_q) * 60, x_q)
+                    #x_q = torch.where((x_sl_max == 2) & (x_q == 32), torch.ones_like(x_q) * 30, x_q)
+                    #x_q = torch.where((x_sl_max == 1) & (x_q == 16), torch.ones_like(x_q) * 15, x_q)
                 else:
                     x_q = torch.floor(x_q / x_sl_max) * x_sl_max
 
@@ -176,11 +176,10 @@ class UnfoldConv2d(nn.Conv2d):
                     w_q = torch.round(w_q / w_sl_max) * w_sl_max
 
                     w_q = torch.where((w_sl_max == 16) & (w_q == 128), torch.ones_like(w_q) * 112, w_q)
-                    w_q = torch.where((w_sl_max == 8) & (w_q == 64), torch.ones_like(w_q) * 56, w_q)
-                    w_q = torch.where((w_sl_max == 4) & (w_q == 32), torch.ones_like(w_q) * 28, w_q)
-                    w_q = torch.where((w_sl_max == 2) & (w_q == 16), torch.ones_like(w_q) * 14, w_q)
-                    w_q = torch.where((w_sl_max == 1) & (w_q == 8), torch.ones_like(w_q) * 7, w_q)
-                    # TODO: handle overflows
+                    #w_q = torch.where((w_sl_max == 8) & (w_q == 64), torch.ones_like(w_q) * 56, w_q)
+                    #w_q = torch.where((w_sl_max == 4) & (w_q == 32), torch.ones_like(w_q) * 28, w_q)
+                    #w_q = torch.where((w_sl_max == 2) & (w_q == 16), torch.ones_like(w_q) * 14, w_q)
+                    #w_q = torch.where((w_sl_max == 1) & (w_q == 8), torch.ones_like(w_q) * 7, w_q)
                 else:
                     w_q = torch.floor(w_q / w_sl_max) * w_sl_max
 
