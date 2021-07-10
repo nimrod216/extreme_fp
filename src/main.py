@@ -57,7 +57,7 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
     # Initialize log file
     name_str = '{}-{}_quantize_x-{}_w-{}'.format(arch, dataset, x_bits, w_bits)
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
-    name_str = name_str + '_seed-{}-{}'.format(cfg.SEED_TORCH, cfg.SEED_NP)
+    name_str = name_str + '_seed-{}'.format(cfg.SEED)
 
     cfg.LOG.start_new_log(name=name_str)
     cfg.LOG.write('desc={}, x_bits={}, w_bits={}'.format(desc, x_bits, w_bits))
@@ -97,7 +97,7 @@ def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bit
     name_str = name_str + '_grpSZw-{}'.format(group_sz_w) if sparq_w else name_str
     name_str = name_str + '_noBN' if skip_bn_recal else name_str
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
-    name_str = name_str + '_seed-{}-{}'.format(cfg.SEED_TORCH, cfg.SEED_NP)
+    name_str = name_str + '_seed-{}'.format(cfg.SEED)
 
     # Start log
     cfg.LOG.start_new_log(name=name_str)
@@ -151,12 +151,12 @@ def main():
 
     # Deterministic random numbers
     torch.backends.cudnn.deterministic = True
-    torch.manual_seed(cfg.SEED_TORCH)
-    torch.cuda.manual_seed(cfg.SEED_TORCH)
-    np.random.seed(cfg.SEED_NP)
+    torch.manual_seed(cfg.SEED)
+    torch.cuda.manual_seed(cfg.SEED)
+    np.random.seed(cfg.SEED)
 
     test_gen, _ = dataset_.testset(batch_size=args.batch_size)
-    (train_gen, _), (_, _) = dataset_.trainset(batch_size=args.batch_size, max_samples=None)
+    train_gen, _ = dataset_.trainset(batch_size=args.batch_size)
 
     model_chkp = None if args.chkp is None else cfg.RESULTS_DIR + '/' + args.chkp
 

@@ -17,8 +17,7 @@ RESULTS_DIR = os.path.join(basedir, 'results')
 
 DEBUG = False
 USER_CMD = None
-SEED_TORCH = 123
-SEED_NP = 16
+SEED = 123
 BATCH_SIZE = 128
 VERBOSITY = 0
 INCEPTION = False

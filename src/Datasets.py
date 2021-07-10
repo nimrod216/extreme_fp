@@ -46,7 +46,7 @@ class ClassificationDataset:
     def max_train_size(self):
         return self._trainset_size
 
-    def testset(self, batch_size, max_samples=None, device='cuda'):
+    def testset(self, batch_size, device='cuda'):
 
         if device.lower() == 'cuda' and torch.cuda.is_available():
             num_workers, pin_memory = 32 if not cfg.DEBUG else 0, True
@@ -56,20 +56,15 @@ class ClassificationDataset:
 
         test_dataset = self._test_importer()
 
-        if max_samples is None or max_samples >= self._testset_size:
-            testset_sz = self._testset_size
-            test_sampler = None
-        else:
-            testset_sz = max_samples
-            test_sampler = SequentialSampler(list(range(max_samples)))
+        testset_sz = len(test_dataset.targets)
+        test_sampler = None
 
         test_gen = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, sampler=test_sampler,
                                                num_workers=num_workers, pin_memory=pin_memory)
 
         return test_gen, testset_sz
 
-    def trainset(self, batch_size=128, valid_size=0.0, max_samples=None, augment=True, shuffle=True, random_seed=None,
-                 device='cuda'):
+    def trainset(self, batch_size=128, valid_size=0.0, augment=True, device='cuda'):
 
         if device.lower() == 'cuda' and torch.cuda.is_available():
             num_workers, pin_memory = 32 if not cfg.DEBUG else 0, True
@@ -77,33 +72,19 @@ class ClassificationDataset:
             print('Warning: Did not find working GPU - Loading dataset on CPU')
             num_workers, pin_memory = 4 if not cfg.DEBUG else 0, False
 
-        max_samples = self._trainset_size if max_samples is None else min(self._trainset_size, max_samples)
         assert ((valid_size >= 0) and (valid_size <= 1)), "Valid_size should be in the range [0, 1]."
 
         train_dataset = self._train_importer(augment)
-        val_dataset = self._train_importer(False)       # Don't augment validation
 
-        indices = list(range(self._trainset_size))
-        if shuffle:
-            if random_seed is not None:
-                np.random.seed(random_seed)
-            np.random.shuffle(indices)
-
-        indices = indices[:max_samples]  # Truncate to desired size
-        split = int(np.floor(valid_size * max_samples))  # Split validation
-        train_ids, valid_ids = indices[split:], indices[:split]
-
-        num_train = len(train_ids)
-        num_valid = len(valid_ids)
+        target_idx = list(range(len(train_dataset.targets)))
+        num_train = len(train_dataset.targets)
+        np.random.shuffle(target_idx)
 
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size,
-                                                   sampler=SubsetRandomSampler(train_ids), num_workers=num_workers,
-                                                   pin_memory=pin_memory)
-        valid_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size,
-                                                   sampler=SubsetRandomSampler(valid_ids), num_workers=num_workers,
+                                                   sampler=SubsetRandomSampler(target_idx), num_workers=num_workers,
                                                    pin_memory=pin_memory)
 
-        return (train_loader, num_train), (valid_loader, num_valid)
+        return train_loader, num_train
 
     def _train_importer(self, augment=True):
         raise NotImplementedError
