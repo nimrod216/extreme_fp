@@ -3,7 +3,7 @@ import torch.nn as nn
 import cu_gemm_quant
 import Config as cfg
 import matplotlib.pyplot as plt
-
+from qtorch.quant.quant_function import float_quantize
 
 class RoundSTE(torch.autograd.Function):
     @staticmethod
@@ -77,7 +77,7 @@ class UnfoldConv2d(nn.Conv2d):
             # Activations quantization
             # Only supports unsigned uniform quantization
             if torch.min(x) == 0:
-                x_q, x_q_delta = self._uniform_quantization(x, self.max_mean, self._x_bits)
+                x_q, x_q_delta = self._uniform_sparq8_quantization(x, self.max_mean, self._x_bits)
                 x_q = x_q.int().float()         # Just in case
                 assert (x_q.max() <= ((2 ** self._x_bits) - 1) and x_q.min() >= 0)
             else:
@@ -86,7 +86,7 @@ class UnfoldConv2d(nn.Conv2d):
 
             # Weights quantization
             w_q, w_q_delta = \
-                self._uniform_symmetric_quantization_per_filter(self.weight,
+                self._uniform_sparq8_symmetric_quantization_per_filter(self.weight,
                                                                 self.weight.data.min(dim=3)[0].min(dim=2)[0].min(dim=1)[0],
                                                                 self.weight.data.max(dim=3)[0].max(dim=2)[0].max(dim=1)[0],
                                                                 self._w_bits)
@@ -98,7 +98,7 @@ class UnfoldConv2d(nn.Conv2d):
             if self.bias is None:
                 bias_fp = None
             else:
-                bias_q, bias_q_delta = self._uniform_symmetric_quantization(self.bias,
+                bias_q, bias_q_delta = self._uniform_sparq8_symmetric_quantization(self.bias,
                                                                             torch.min(self.bias.data),
                                                                             torch.max(self.bias.data), self._w_bits)
 
@@ -238,4 +238,29 @@ class UnfoldConv2d(nn.Conv2d):
         delta = max(abs(x_min), abs(x_max)) * 2 / (N - 1)
         x_int = RoundSTE.apply(x / delta)
         x_q = torch.clamp(x_int, -N / 2, N / 2 - 1)
+        return x_q, delta
+
+
+    @staticmethod
+    def _uniform_sparq8_quantization(x, x_max, bits, shift):
+        N = 2 ** bits
+        delta = x_max / (N - 1)
+        x_norm = x / delta
+        x_q = float_quantize(x=x_norm, exp=shift, man=bits, rounding="stochastic")
+        return x_q, delta
+
+    @staticmethod
+    def _uniform_sparq8_symmetric_quantization_per_filter(x, x_min, x_max, bits, shift):
+        N = (2 ** bits) * (2**shift)
+        delta = torch.where(x_min.abs() > x_max.abs(), x_min.abs(), x_max.abs()) * 2 / (N - 1)
+        x_norm = x / delta[:, None, None, None].expand_as(x)
+        x_q = float_quantize(x=x_norm, exp=shift, man=bits, rounding="stochastic")
+        return x_q, delta
+
+    @staticmethod
+    def _uniform_sparq8_symmetric_quantization(x, x_min, x_max, bits, shift):
+        N = (2 ** bits) * (2**shift)
+        delta = max(abs(x_min), abs(x_max)) * 2 / (N - 1)
+        x_norm = x / delta
+        x_q = float_quantize(x=x_norm, exp=shift, man=bits, rounding="stochastic")
         return x_q, delta
