@@ -50,10 +50,15 @@ parser.add_argument('--gpu', nargs='+', default=None,
                     help='GPU to run on (default: 0)')
 parser.add_argument('-v', '--verbosity', default=0, type=int,
                     help='verbosity level (0,1,2) (default: 0)')
-
+parser.add_argument('-fp', default=False, type=bool,
+                    help=' using floating point quantization' )
+parser.add_argument('-per_filter_quant', default=False, type=bool,
+                    help='quantization per filter, defualt is false' )
+parser.add_argument('-shift_bits', default=None, type=int,
+                    help='shift bits for FP type qauntization' )
 
 def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
-                     x_bits=8, w_bits=8, desc=None):
+                     x_bits=8, w_bits=8, desc=None, fp=False, per_filter=False, shift=None):
     # Initialize log file
     name_str = '{}-{}_quantize_x-{}_w-{}'.format(arch, dataset, x_bits, w_bits)
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
@@ -69,7 +74,11 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
     nn.model.set_quantize(True)
     nn.model.set_quantization_bits(x_bits, w_bits)
     nn.model.set_min_max_update(True)
-
+    nn.model.set_quantization_type(fp)  
+    nn.model.set_per_filter_quant(per_filter)
+    if shift is not None:
+        #print(type(shift))
+        nn.model.set_shift_bits(shift)
     nn.best_top1_acc = 0
     nn.next_train_epoch = 0
 
@@ -163,7 +172,8 @@ def main():
     if args.action == 'QUANTIZE':
         quantize_network(arch, dataset, train_gen, test_gen,
                          model_chkp=model_chkp,
-                         x_bits=args.x_bits, w_bits=args.w_bits, desc=args.desc)
+                         x_bits=args.x_bits, w_bits=args.w_bits,
+                         desc=args.desc, fp=args.fp, per_filter=args.per_filter_quant, shift=args.shift_bits)
 
     elif args.action == 'INFERENCE':
         inference(arch, dataset, train_gen, test_gen,

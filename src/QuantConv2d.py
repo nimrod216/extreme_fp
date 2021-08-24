@@ -45,6 +45,9 @@ class UnfoldConv2d(nn.Conv2d):
         self._group_sz_w = None
         self._sparq_x = None
         self._sparq_w = None
+        self.fp = False             #bool variable that decides if we are using fp or int quantization 
+        self.filter_wise = False    #bool variable that decieds if we are using per filter or whole quantization
+        self.shift_bits = int(self._x_bits/2)    #bool variable that decieds if we are using per filter or whole quantization
 
     def _reset_stats(self, d):
         for k, v in d.items():
@@ -77,31 +80,68 @@ class UnfoldConv2d(nn.Conv2d):
             # Activations quantization
             # Only supports unsigned uniform quantization
             if torch.min(x) == 0:
-                x_q, x_q_delta = self._uniform_sparq8_quantization(x, self.max_mean, self._x_bits)
-                x_q = x_q.int().float()         # Just in case
-                assert (x_q.max() <= ((2 ** self._x_bits) - 1) and x_q.min() >= 0)
+                if self.fp:
+                    x_q, x_q_delta = self._uniform_sparq8_quantization(x, x.max(), self._x_bits, self.shift_bits)
+                    x_q = x_q.int().float()         # Just in case
+                    assert (x_q.max() <= (2**((2 ** (self.shift_bits-1)) -1))*(2-(2**(-(self._x_bits - self.shift_bits)))) and x_q.min() >= 0)
+                else:
+                    x_q, x_q_delta = self._uniform_quantization(x, self.max_mean, self._x_bits)
+                    x_q = x_q.int().float()         # Just in case
+                    assert (x_q.max() <= ((2 ** self._x_bits) - 1) and x_q.min() >= 0)
             else:
                 cfg.LOG.write('Error: not supporting signed activation quantization')
                 raise NotImplementedError
 
             # Weights quantization
-            w_q, w_q_delta = \
-                self._uniform_sparq8_symmetric_quantization_per_filter(self.weight,
+            if self.fp:
+                if not self.filter_wise:
+                    w_q, w_q_delta = \
+                        self._uniform_sparq8_symmetric_quantization(self.weight,
+                                                               self.weight.min(),
+                                                                self.weight.max(),
+                                                                self._w_bits,
+                                                                self.shift_bits)
+                else:
+                    w_q, w_q_delta = \
+                        self._uniform_sparq8_symmetric_quantization_per_filter(self.weight,
+                                                                self.weight.data.min(dim=3)[0].min(dim=2)[0].min(dim=1)[0],
+                                                                self.weight.data.max(dim=3)[0].max(dim=2)[0].max(dim=1)[0],
+                                                                self._w_bits,
+                                                                self.shift_bits)
+                w_q = w_q.int().float()   # Just in case
+                assert (w_q.max() <= (2**((2 ** (self.shift_bits-1)) -1))*(2-(2**(-(self._w_bits - self.shift_bits)))) and w_q.min() >= - (2**((2 ** (self.shift_bits-1)) -1))*(2-(2**(-(self._w_bits - self.shift_bits)))))
+            else:
+                if not self.filter_wise:
+                    w_q, w_q_delta = \
+                        self._uniform_symmetric_quantization(self.weight,
+                                                                self.weight.min(),
+                                                                self.weight.max(),
+                                                                self._w_bits)
+                else:
+                    w_q, w_q_delta = \
+                        self._uniform_symmetric_quantization_per_filter(self.weight,
                                                                 self.weight.data.min(dim=3)[0].min(dim=2)[0].min(dim=1)[0],
                                                                 self.weight.data.max(dim=3)[0].max(dim=2)[0].max(dim=1)[0],
                                                                 self._w_bits)
+                w_q = w_q.int().float()   # Just in case
+                assert (w_q.max() <= ((2 ** self._w_bits) / 2 - 1) and w_q.min() >= (-2 ** self._w_bits) / 2)
 
-            w_q = w_q.int().float()   # Just in case
-            assert (w_q.max() <= ((2 ** self._w_bits) / 2 - 1) and w_q.min() >= (-2 ** self._w_bits) / 2)
+
 
             # Bias quantization
             if self.bias is None:
                 bias_fp = None
             else:
-                bias_q, bias_q_delta = self._uniform_sparq8_symmetric_quantization(self.bias,
+                if self.fp:
+                    bias_q, bias_q_delta = self._uniform_sparq8_symmetric_quantization(self.bias,
                                                                             torch.min(self.bias.data),
-                                                                            torch.max(self.bias.data), self._w_bits)
-
+                                                                            torch.max(self.bias.data), self._w_bits,
+                                                                            self.shift_bits)
+                else:
+                    bias_q, bias_q_delta = self._uniform_symmetric_quantization(self.bias,
+                                                                            torch.min(self.bias.data),
+                                                                            torch.max(self.bias.data), self._w_bits,
+                                                                            self.shift_bits)
                 assert (bias_q.max() <= ((2 ** self._w_bits) / 2 - 1) and bias_q.min() >= (-2 ** self._w_bits) / 2)
 
                 bias_fp = bias_q * bias_q_delta
@@ -113,7 +153,14 @@ class UnfoldConv2d(nn.Conv2d):
             bias_fp = self.bias
 
         if not self._sparq_x and not self._sparq_w:
-            out = nn.functional.conv2d(x_q * x_q_delta,
+            if not self.filter_wise:
+                out = nn.functional.conv2d(x_q * x_q_delta,
+                                       w_q * w_q_delta,
+                                       bias=bias_fp,
+                                       stride=(self.stride[0], self.stride[1]),
+                                       padding=(self.padding[0], self.padding[1]), groups=self.groups)
+            else:
+                out = nn.functional.conv2d(x_q * x_q_delta,
                                        w_q * w_q_delta[:, None, None, None].expand_as(w_q),
                                        bias=bias_fp,
                                        stride=(self.stride[0], self.stride[1]),
@@ -242,25 +289,25 @@ class UnfoldConv2d(nn.Conv2d):
 
 
     @staticmethod
-    def _uniform_sparq8_quantization(x, x_max, bits, shift):
-        N = 2 ** bits
-        delta = x_max / (N - 1)
+    def _uniform_sparq8_quantization(x, x_max, bits, shift=4):
+        N = (2**((2 ** (shift-1)) -1))*(2-(2**(-(bits - shift))))
+        delta = x_max / N
         x_norm = x / delta
-        x_q = float_quantize(x=x_norm, exp=shift, man=bits, rounding="stochastic")
+        x_q = float_quantize(x=x_norm, exp=shift, man=bits-shift, rounding="stochastic")
         return x_q, delta
 
     @staticmethod
-    def _uniform_sparq8_symmetric_quantization_per_filter(x, x_min, x_max, bits, shift):
-        N = (2 ** bits) * (2**shift)
-        delta = torch.where(x_min.abs() > x_max.abs(), x_min.abs(), x_max.abs()) * 2 / (N - 1)
+    def _uniform_sparq8_symmetric_quantization_per_filter(x, x_min, x_max, bits, shift=4):
+        N = (2**((2 ** (shift-1)) -1))*(2-(2**(-(bits - shift))))
+        delta = torch.where(x_min.abs() > x_max.abs(), x_min.abs(), x_max.abs())*2 / N
         x_norm = x / delta[:, None, None, None].expand_as(x)
-        x_q = float_quantize(x=x_norm, exp=shift, man=bits, rounding="stochastic")
+        x_q = float_quantize(x=x_norm, exp=shift, man=bits-shift, rounding="stochastic")
         return x_q, delta
 
     @staticmethod
-    def _uniform_sparq8_symmetric_quantization(x, x_min, x_max, bits, shift):
-        N = (2 ** bits) * (2**shift)
-        delta = max(abs(x_min), abs(x_max)) * 2 / (N - 1)
+    def _uniform_sparq8_symmetric_quantization(x, x_min, x_max, bits, shift=4):
+        N = (2**((2 ** (shift-1)) -1))*(2-(2**(-(bits - shift))))
+        delta = max(abs(x_min), abs(x_max)) / N
         x_norm = x / delta
-        x_q = float_quantize(x=x_norm, exp=shift, man=bits, rounding="stochastic")
+        x_q = float_quantize(x=x_norm, exp=shift, man=bits-shift, rounding="stochastic")
         return x_q, delta

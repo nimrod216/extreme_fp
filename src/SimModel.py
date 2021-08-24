@@ -57,6 +57,18 @@ class SimModel(nn.Module):
             l._group_sz_x = v_x
             l._group_sz_w = v_w
 
+    def set_quantization_type(self, fp):
+        for l in self.unfold_list:
+            l.fp = fp
+
+    def set_per_filter_quant(self, per_filter):
+        for l in self.unfold_list:
+            l.filter_wise = per_filter 
+
+    def set_shift_bits(self, shift_bit):
+        for l in self.unfold_list:
+            l.shift_bits = shift_bit 
+    
     def print_config(self):
         headers = None
         table = []
