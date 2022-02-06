@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
-import cu_gemm_quant
+import cu_sparq
 import Config as cfg
 import matplotlib.pyplot as plt
-from qtorch.quant.quant_function import float_quantize
+
 
 class RoundSTE(torch.autograd.Function):
     @staticmethod
@@ -38,16 +38,8 @@ class UnfoldConv2d(nn.Conv2d):
 
         # Custom kernel variables
         self._is_round = None
-        self._shift_opt = None
-        self._bit_group_x = None
-        self._bit_group_w = None
-        self._group_sz_x = None
-        self._group_sz_w = None
-        self._sparq_x = None
-        self._sparq_w = None
-        self.fp = False             #bool variable that decides if we are using fp or int quantization 
-        self.filter_wise = False    #bool variable that decieds if we are using per filter or whole quantization
-        self.shift_bits = int(self._x_bits/2)    #bool variable that decieds if we are using per filter or whole quantization
+        self._shift_opt_x = None
+        self._shift_opt_w = None
 
     def _reset_stats(self, d):
         for k, v in d.items():
@@ -80,68 +72,31 @@ class UnfoldConv2d(nn.Conv2d):
             # Activations quantization
             # Only supports unsigned uniform quantization
             if torch.min(x) == 0:
-                if self.fp:
-                    x_q, x_q_delta = self._uniform_sparq8_quantization(x, x.max(), self._x_bits, self.shift_bits)
-                    x_q = x_q.int().float()         # Just in case
-                    assert (x_q.max() <= (2**((2 ** (self.shift_bits-1)) -1))*(2-(2**(-(self._x_bits - self.shift_bits)))) and x_q.min() >= 0)
-                else:
-                    x_q, x_q_delta = self._uniform_quantization(x, self.max_mean, self._x_bits)
-                    x_q = x_q.int().float()         # Just in case
-                    assert (x_q.max() <= ((2 ** self._x_bits) - 1) and x_q.min() >= 0)
+                x_q, x_q_delta = self._uniform_quantization(x, self.max_mean, self._x_bits)
+                x_q = x_q.int().float()         # Just in case
+                assert (x_q.max() <= ((2 ** self._x_bits) - 1) and x_q.min() >= 0)
             else:
                 cfg.LOG.write('Error: not supporting signed activation quantization')
                 raise NotImplementedError
 
             # Weights quantization
-            if self.fp:
-                if not self.filter_wise:
-                    w_q, w_q_delta = \
-                        self._uniform_sparq8_symmetric_quantization(self.weight,
-                                                               self.weight.min(),
-                                                                self.weight.max(),
-                                                                self._w_bits,
-                                                                self.shift_bits)
-                else:
-                    w_q, w_q_delta = \
-                        self._uniform_sparq8_symmetric_quantization_per_filter(self.weight,
-                                                                self.weight.data.min(dim=3)[0].min(dim=2)[0].min(dim=1)[0],
-                                                                self.weight.data.max(dim=3)[0].max(dim=2)[0].max(dim=1)[0],
-                                                                self._w_bits,
-                                                                self.shift_bits)
-                w_q = w_q.int().float()   # Just in case
-                assert (w_q.max() <= (2**((2 ** (self.shift_bits-1)) -1))*(2-(2**(-(self._w_bits - self.shift_bits)))) and w_q.min() >= - (2**((2 ** (self.shift_bits-1)) -1))*(2-(2**(-(self._w_bits - self.shift_bits)))))
-            else:
-                if not self.filter_wise:
-                    w_q, w_q_delta = \
-                        self._uniform_symmetric_quantization(self.weight,
-                                                                self.weight.min(),
-                                                                self.weight.max(),
-                                                                self._w_bits)
-                else:
-                    w_q, w_q_delta = \
-                        self._uniform_symmetric_quantization_per_filter(self.weight,
+            w_q, w_q_delta = \
+                self._uniform_symmetric_quantization_per_filter(self.weight,
                                                                 self.weight.data.min(dim=3)[0].min(dim=2)[0].min(dim=1)[0],
                                                                 self.weight.data.max(dim=3)[0].max(dim=2)[0].max(dim=1)[0],
                                                                 self._w_bits)
-                w_q = w_q.int().float()   # Just in case
-                assert (w_q.max() <= ((2 ** self._w_bits) / 2 - 1) and w_q.min() >= (-2 ** self._w_bits) / 2)
 
-
+            w_q = w_q.int().float()   # Just in case
+            assert (w_q.max() <= ((2 ** self._w_bits) / 2 - 1) and w_q.min() >= (-2 ** self._w_bits) / 2)
 
             # Bias quantization
             if self.bias is None:
                 bias_fp = None
             else:
-                if self.fp:
-                    bias_q, bias_q_delta = self._uniform_sparq8_symmetric_quantization(self.bias,
+                bias_q, bias_q_delta = self._uniform_symmetric_quantization(self.bias,
                                                                             torch.min(self.bias.data),
-                                                                            torch.max(self.bias.data), self._w_bits,
-                                                                            self.shift_bits)
-                else:
-                    bias_q, bias_q_delta = self._uniform_symmetric_quantization(self.bias,
-                                                                            torch.min(self.bias.data),
-                                                                            torch.max(self.bias.data), self._w_bits,
-                                                                            self.shift_bits)
+                                                                            torch.max(self.bias.data), self._w_bits)
+
                 assert (bias_q.max() <= ((2 ** self._w_bits) / 2 - 1) and bias_q.min() >= (-2 ** self._w_bits) / 2)
 
                 bias_fp = bias_q * bias_q_delta
@@ -152,95 +107,11 @@ class UnfoldConv2d(nn.Conv2d):
             w_q, w_q_delta = self.weight, torch.Tensor([1]).cuda()
             bias_fp = self.bias
 
-        if not self._sparq_x and not self._sparq_w:
-            if not self.filter_wise:
-                out = nn.functional.conv2d(x_q * x_q_delta,
-                                       w_q * w_q_delta,
-                                       bias=bias_fp,
-                                       stride=(self.stride[0], self.stride[1]),
-                                       padding=(self.padding[0], self.padding[1]), groups=self.groups)
-            else:
-                out = nn.functional.conv2d(x_q * x_q_delta,
-                                       w_q * w_q_delta[:, None, None, None].expand_as(w_q),
-                                       bias=bias_fp,
-                                       stride=(self.stride[0], self.stride[1]),
-                                       padding=(self.padding[0], self.padding[1]), groups=self.groups)
-        else:
-            # At the moment, unfold and quantization must go together
-            assert (self._quantize is True)
-            assert (self._is_round is not None)
-            assert (self._shift_opt == 5)
-
-            if self._sparq_x:
-                # C-W-H ordering
-                x_q = x_q.permute(0, 2, 3, 1)
-
-                x_sl = torch.where(x_q >= 2 ** 7, torch.ones_like(x_q) * 4, torch.zeros_like(x_q))
-                x_sl = x_sl + torch.where((x_q < 2 ** 7) & (x_q >= 2 ** 6), torch.ones_like(x_q) * 3, torch.zeros_like(x_q))
-                x_sl = x_sl + torch.where((x_q < 2 ** 6) & (x_q >= 2 ** 5), torch.ones_like(x_q) * 2, torch.zeros_like(x_q))
-                x_sl = x_sl + torch.where((x_q < 2 ** 5) & (x_q >= 2 ** 4), torch.ones_like(x_q) * 1, torch.zeros_like(x_q))
-
-                x_sl = x_sl.flatten()
-                x_sl = x_sl.reshape([int(x_sl.size(0) / self._group_sz_x), self._group_sz_x])
-                x_sl_max = x_sl.max(dim=1)[0]
-                x_sl_max = x_sl_max[:, None].expand_as(x_sl)
-                x_sl_max = (2 ** x_sl_max).reshape_as(x_q)
-
-                if self._is_round:
-                    x_q = torch.round(x_q / x_sl_max) * x_sl_max
-
-                    x_q = torch.where((x_sl_max == 16) & (x_q == 256), torch.ones_like(x_q) * 240, x_q)
-                    #x_q = torch.where((x_sl_max == 8) & (x_q == 128), torch.ones_like(x_q) * 120, x_q)
-                    #x_q = torch.where((x_sl_max == 4) & (x_q == 64), torch.ones_like(x_q) * 60, x_q)
-                    #x_q = torch.where((x_sl_max == 2) & (x_q == 32), torch.ones_like(x_q) * 30, x_q)
-                    #x_q = torch.where((x_sl_max == 1) & (x_q == 16), torch.ones_like(x_q) * 15, x_q)
-                else:
-                    x_q = torch.floor(x_q / x_sl_max) * x_sl_max
-
-                x_q = x_q.permute(0, 3, 1, 2)
-
-                x_sl = x_sl_max = None
-
-            if self._sparq_w:
-                # N-W-H order
-                w_q = w_q.permute(0, 2, 3, 1)
-
-                w_sl = torch.where((w_q.abs() >= 2 ** 6), torch.ones_like(w_q) * 4, torch.zeros_like(w_q))
-                w_sl = w_sl + torch.where((w_q.abs() < 2 ** 6) & (w_q.abs() >= 2 ** 5), torch.ones_like(w_q) * 3, torch.zeros_like(w_q))
-                w_sl = w_sl + torch.where((w_q.abs() < 2 ** 5) & (w_q.abs() >= 2 ** 4), torch.ones_like(w_q) * 2, torch.zeros_like(w_q))
-                w_sl = w_sl + torch.where((w_q.abs() < 2 ** 4) & (w_q.abs() >= 2 ** 3), torch.ones_like(w_q) * 1, torch.zeros_like(w_q))
-                # TODO: is it precise with the signed numbers?
-
-                # self._group_sz_w = self.weight.size(2) * self.weight.size(3)
-
-                w_sl = w_sl.flatten()
-                w_sl = w_sl.reshape([int(w_sl.size(0) / self._group_sz_w), self._group_sz_w])
-                w_sl_max = w_sl.max(dim=1)[0]
-                w_sl_max = w_sl_max[:, None].expand_as(w_sl)
-                w_sl_max = (2 ** w_sl_max).reshape_as(w_q)
-
-                if self._is_round:
-                    w_q = torch.round(w_q / w_sl_max) * w_sl_max
-
-                    w_q = torch.where((w_sl_max == 16) & (w_q == 128), torch.ones_like(w_q) * 112, w_q)
-                    #w_q = torch.where((w_sl_max == 8) & (w_q == 64), torch.ones_like(w_q) * 56, w_q)
-                    #w_q = torch.where((w_sl_max == 4) & (w_q == 32), torch.ones_like(w_q) * 28, w_q)
-                    #w_q = torch.where((w_sl_max == 2) & (w_q == 16), torch.ones_like(w_q) * 14, w_q)
-                    #w_q = torch.where((w_sl_max == 1) & (w_q == 8), torch.ones_like(w_q) * 7, w_q)
-                else:
-                    w_q = torch.floor(w_q / w_sl_max) * w_sl_max
-
-                # Back to W-H-N order
-                w_q = w_q.permute(0, 3, 1, 2)
-
-                w_sl = w_sl_max = None
-
-            out = nn.functional.conv2d(x_q * x_q_delta,
-                                       w_q * w_q_delta[:, None, None, None].expand_as(w_q),
-                                       bias=bias_fp,
-                                       stride=(self.stride[0], self.stride[1]),
-                                       padding=(self.padding[0], self.padding[1]), groups=self.groups)
-
+        out = nn.functional.conv2d(x_q * x_q_delta,
+                                   w_q * w_q_delta[:, None, None, None].expand_as(w_q),
+                                   bias=bias_fp,
+                                   stride=(self.stride[0], self.stride[1]),
+                                   padding=(self.padding[0], self.padding[1]), groups=self.groups)
         return out
 
     def get_status_arr(self):
@@ -252,14 +123,20 @@ class UnfoldConv2d(nn.Conv2d):
         key.extend(['sparq_x', 'sparq_w'])
         val.extend([self._sparq_x, self._sparq_w])
 
-        key.extend(['is_round', 'shift_opt'])
-        val.extend([self._is_round, self._shift_opt]) if self._sparq_x or self._sparq_w else val.extend(['-', '-'])
+        key.extend(['is_round'])
+        val.extend([self._is_round]) if self._sparq_x or self._sparq_w else val.extend(['-', '-'])
 
-        key.extend(['bit_grp_x', 'grp_sz_x'])
-        val.extend([self._bit_group_x, self._group_sz_x]) if self._sparq_x else val.extend(['-', '-'])
+        key.extend(['shift_opt_x'])
+        val.extend([self._shift_opt_x]) if self._sparq_x else val.extend(['-'])
 
-        key.extend(['bit_grp_w', 'grp_sz_w'])
-        val.extend([self._bit_group_w, self._group_sz_w]) if self._sparq_w else val.extend(['-', '-'])
+        key.extend(['shift_opt_w'])
+        val.extend([self._shift_opt_w]) if self._sparq_w else val.extend(['-'])
+
+        key.extend(['grp_sz_x'])
+        val.extend([self._group_sz_x]) if self._sparq_x else val.extend(['-', '-'])
+
+        key.extend(['grp_sz_w'])
+        val.extend([self._group_sz_w]) if self._sparq_w else val.extend(['-', '-'])
 
         return key, val
 
@@ -285,29 +162,4 @@ class UnfoldConv2d(nn.Conv2d):
         delta = max(abs(x_min), abs(x_max)) * 2 / (N - 1)
         x_int = RoundSTE.apply(x / delta)
         x_q = torch.clamp(x_int, -N / 2, N / 2 - 1)
-        return x_q, delta
-
-
-    @staticmethod
-    def _uniform_sparq8_quantization(x, x_max, bits, shift=4):
-        N = (2**((2 ** (shift-1)) -1))*(2-(2**(-(bits - shift))))
-        delta = x_max / N
-        x_norm = x / delta
-        x_q = float_quantize(x=x_norm, exp=shift, man=bits-shift, rounding="stochastic")
-        return x_q, delta
-
-    @staticmethod
-    def _uniform_sparq8_symmetric_quantization_per_filter(x, x_min, x_max, bits, shift=4):
-        N = (2**((2 ** (shift-1)) -1))*(2-(2**(-(bits - shift))))
-        delta = torch.where(x_min.abs() > x_max.abs(), x_min.abs(), x_max.abs())*2 / N
-        x_norm = x / delta[:, None, None, None].expand_as(x)
-        x_q = float_quantize(x=x_norm, exp=shift, man=bits-shift, rounding="stochastic")
-        return x_q, delta
-
-    @staticmethod
-    def _uniform_sparq8_symmetric_quantization(x, x_min, x_max, bits, shift=4):
-        N = (2**((2 ** (shift-1)) -1))*(2-(2**(-(bits - shift))))
-        delta = max(abs(x_min), abs(x_max)) / N
-        x_norm = x / delta
-        x_q = float_quantize(x=x_norm, exp=shift, man=bits-shift, rounding="stochastic")
         return x_q, delta

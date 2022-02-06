@@ -36,29 +36,24 @@ parser.add_argument('--sparq_w', action='store_true',
                     help='enable SPARQ on weights')
 parser.add_argument('--round_mode', choices=['ROUND', 'RAW'], default='ROUND',
                     help='rounding (i.e., nearbyint, default) or raw')
-parser.add_argument('--shift_opt', choices=[5, 3, 2], default=5, type=int,
-                    help='choose the number of window placement options (default: 5)')
-parser.add_argument('--bit_group_x', choices=[4, 3, 2], default=4, type=int,
-                    help='activation window size (default: 4)')
-parser.add_argument('--bit_group_w', choices=[4, 3, 2], default=4, type=int,
-                    help='weight window size (default: 4)')
+parser.add_argument('--shift_opt_x', choices=[7, 6, 5, 42, 41, 3, 2], default=5, type=int,
+                    help='choose the number of window placement options for activations (default: 5)')
+parser.add_argument('--shift_opt_w', choices=[7, 6, 5, 42, 41, 3], default=5, type=int,
+                    help='choose the number of window placement options for weights (default: 5)')
 parser.add_argument('--group_sz_x', default=1, type=int,
                     help='activation grouping')
 parser.add_argument('--group_sz_w', default=1, type=int,
                     help='weight grouping')
+parser.add_argument('--unfold', action='store_true',
+                    help='enable tensor unfolding')
 parser.add_argument('--gpu', nargs='+', default=None,
                     help='GPU to run on (default: 0)')
 parser.add_argument('-v', '--verbosity', default=0, type=int,
                     help='verbosity level (0,1,2) (default: 0)')
-parser.add_argument('-fp', default=False, type=bool,
-                    help=' using floating point quantization' )
-parser.add_argument('-per_filter_quant', default=False, type=bool,
-                    help='quantization per filter, defualt is false' )
-parser.add_argument('-shift_bits', default=None, type=int,
-                    help='shift bits for FP type qauntization' )
+
 
 def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
-                     x_bits=8, w_bits=8, desc=None, fp=False, per_filter=False, shift=None):
+                     x_bits=8, w_bits=8, desc=None):
     # Initialize log file
     name_str = '{}-{}_quantize_x-{}_w-{}'.format(arch, dataset, x_bits, w_bits)
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
@@ -74,11 +69,7 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
     nn.model.set_quantize(True)
     nn.model.set_quantization_bits(x_bits, w_bits)
     nn.model.set_min_max_update(True)
-    nn.model.set_quantization_type(fp)  
-    nn.model.set_per_filter_quant(per_filter)
-    if shift is not None:
-        #print(type(shift))
-        nn.model.set_shift_bits(shift)
+
     nn.best_top1_acc = 0
     nn.next_train_epoch = 0
 
@@ -90,8 +81,8 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
 
 
 def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bits=None, sparq_x=False, sparq_w=False,
-              unfold=True, is_round=None, shift_opt=None, bit_group_x=None, bit_group_w=None,
-              group_sz_x=1, group_sz_w=1, skip_bn_recal=False, desc=None):
+              is_round=None, shift_opt_x=None, shift_opt_w=None,
+              group_sz_x=1, group_sz_w=1, skip_bn_recal=False, is_unfold=False, desc=None):
 
     # Get test string ready
     name_str = '{}-{}_inference'.format(arch, dataset)
@@ -99,12 +90,12 @@ def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bit
     name_str = name_str + '_sparq_x' if sparq_x is True else name_str
     name_str = name_str + '_sparq_w' if sparq_w is True else name_str
     name_str = name_str + '_round' if sparq_x or sparq_w and is_round else name_str + '_raw'
-    name_str = name_str + '_sOpt-{}'.format(shift_opt) if sparq_x or sparq_w else name_str
-    name_str = name_str + '_bGRPx-{}'.format(bit_group_x) if sparq_x else name_str
-    name_str = name_str + '_bGRPw-{}'.format(bit_group_w) if sparq_w else name_str
+    name_str = name_str + '_sOptX-{}'.format(shift_opt_x) if sparq_x else name_str
+    name_str = name_str + '_sOptW-{}'.format(shift_opt_w) if sparq_w else name_str
     name_str = name_str + '_grpSZx-{}'.format(group_sz_x) if sparq_x else name_str
     name_str = name_str + '_grpSZw-{}'.format(group_sz_w) if sparq_w else name_str
     name_str = name_str + '_noBN' if skip_bn_recal else name_str
+    name_str = name_str + '_unfold' if is_unfold else name_str
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
     name_str = name_str + '_seed-{}'.format(cfg.SEED)
 
@@ -119,8 +110,8 @@ def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bit
     nn.model.set_quantization_bits(x_bits, w_bits)
     nn.model.set_sparq(sparq_x, sparq_w)
     nn.model.set_round(is_round)
-    nn.model.set_shift_opt(shift_opt)
-    nn.model.set_bit_group(bit_group_x, bit_group_w)
+    nn.model.set_unfold(is_unfold)
+    nn.model.set_shift_opt(shift_opt_x, shift_opt_w)
     nn.model.set_group_sz(group_sz_x, group_sz_w)
     nn.model.set_min_max_update(False)
 
@@ -172,18 +163,16 @@ def main():
     if args.action == 'QUANTIZE':
         quantize_network(arch, dataset, train_gen, test_gen,
                          model_chkp=model_chkp,
-                         x_bits=args.x_bits, w_bits=args.w_bits,
-                         desc=args.desc, fp=args.fp, per_filter=args.per_filter_quant, shift=args.shift_bits)
+                         x_bits=args.x_bits, w_bits=args.w_bits, desc=args.desc)
 
     elif args.action == 'INFERENCE':
         inference(arch, dataset, train_gen, test_gen,
                   model_chkp=model_chkp,
                   x_bits=args.x_bits, w_bits=args.w_bits,
                   sparq_x=args.sparq_x, sparq_w=args.sparq_w,
-                  is_round=(args.round_mode == 'ROUND'), shift_opt=args.shift_opt,
-                  bit_group_x=args.bit_group_x, bit_group_w=args.bit_group_w,
+                  is_round=(args.round_mode == 'ROUND'), shift_opt_x=args.shift_opt_x, shift_opt_w=args.shift_opt_w,
                   group_sz_x=args.group_sz_x, group_sz_w=args.group_sz_w,
-                  skip_bn_recal=args.skip_bn_recal, desc=args.desc)
+                  skip_bn_recal=args.skip_bn_recal, is_unfold=args.unfold, desc=args.desc)
 
     return
 

@@ -5,21 +5,12 @@
 
 // CUDA forward declerations
 
-std::vector<torch::Tensor> gemm_48_opt_cuda(
+std::vector<torch::Tensor> gemm_sparq_cuda(
 	torch::Tensor a,
 	torch::Tensor b,
-    const bool is_round,
-    const int shift_opt,
-    const int group_sz);
-
-
-std::vector<torch::Tensor> gemm_48_opt_bitgroup_cuda(
-	torch::Tensor a,
-	torch::Tensor b,
-    const bool is_round,
-    const int shift_opt,
-    const int bit_group,
-    const int group_sz);
+	torch::Tensor a_sl,
+	torch::Tensor b_sl,
+    const bool is_round);
 
 // C++ interface
 
@@ -29,32 +20,22 @@ std::vector<torch::Tensor> gemm_48_opt_bitgroup_cuda(
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
 
 
-std::vector<torch::Tensor> gemm_nbsmt_48_opt_aux(
+std::vector<torch::Tensor> gemm_sparq_aux(
 	torch::Tensor a,
 	torch::Tensor b,
-    const bool is_round,
-    const int shift_opt,
-    const int bit_group,
-    const int group_sz) {
+	torch::Tensor a_sl,
+	torch::Tensor b_sl,
+    const bool is_round) {
 
     CHECK_INPUT(a);
     CHECK_INPUT(b);
-    if (bit_group == 0 || bit_group == 4){     
-        return gemm_48_opt_cuda(a, b, is_round, shift_opt, group_sz);
-    }else{
-        int shift_sets;
-        if(bit_group == 3){
-            shift_sets = 6;
-        }else if(bit_group == 2){
-            shift_sets = 7; 
-        }else{
-            assert(0);
-        }
-        return gemm_48_opt_bitgroup_cuda(a, b, is_round, shift_sets, bit_group, group_sz);
-    }
+    CHECK_INPUT(a_sl);
+    CHECK_INPUT(b_sl);
+
+    return gemm_sparq_cuda(a, b, a_sl, b_sl, is_round);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("run", &gemm_nbsmt_48_opt_aux, "GEMM 2x4b-8b simulation");
+  m.def("run", &gemm_sparq_aux, "GEMM 2x4b-8b simulation");
 }
 
