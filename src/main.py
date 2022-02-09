@@ -30,20 +30,8 @@ parser.add_argument('--w_bits', default=None, type=int, metavar='N',
                     help='weights quantization bits')
 parser.add_argument('--skip_bn_recal', action='store_true',
                     help='skip BatchNorm recalibration (relevant only to the INFERENCE action)')
-parser.add_argument('--sparq_x', action='store_true',
-                    help='enable SPARQ on activations')
-parser.add_argument('--sparq_w', action='store_true',
-                    help='enable SPARQ on weights')
 parser.add_argument('--round_mode', choices=['ROUND', 'RAW'], default='ROUND',
                     help='rounding (i.e., nearbyint, default) or raw')
-parser.add_argument('--shift_opt_x', choices=[7, 6, 5, 42, 41, 3, 2], default=5, type=int,
-                    help='choose the number of window placement options for activations (default: 5)')
-parser.add_argument('--shift_opt_w', choices=[7, 6, 5, 42, 41, 3], default=5, type=int,
-                    help='choose the number of window placement options for weights (default: 5)')
-parser.add_argument('--group_sz_x', default=1, type=int,
-                    help='activation grouping')
-parser.add_argument('--group_sz_w', default=1, type=int,
-                    help='weight grouping')
 parser.add_argument('--unfold', action='store_true',
                     help='enable tensor unfolding')
 parser.add_argument('--gpu', nargs='+', default=None,
@@ -80,20 +68,13 @@ def quantize_network(arch, dataset, train_gen, test_gen, model_chkp=None,
     return
 
 
-def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bits=None, sparq_x=False, sparq_w=False,
-              is_round=None, shift_opt_x=None, shift_opt_w=None,
-              group_sz_x=1, group_sz_w=1, skip_bn_recal=False, is_unfold=False, desc=None):
+def inference(arch, dataset, train_gen, test_gen, model_chkp, x_bits=None, w_bits=None,
+              is_round=None, skip_bn_recal=False, is_unfold=False, desc=None):
 
     # Get test string ready
     name_str = '{}-{}_inference'.format(arch, dataset)
     name_str = name_str + '_x-{}_w-{}'.format(x_bits, w_bits) if x_bits is not None and w_bits is not None else name_str
-    name_str = name_str + '_sparq_x' if sparq_x is True else name_str
-    name_str = name_str + '_sparq_w' if sparq_w is True else name_str
     name_str = name_str + '_round' if sparq_x or sparq_w and is_round else name_str + '_raw'
-    name_str = name_str + '_sOptX-{}'.format(shift_opt_x) if sparq_x else name_str
-    name_str = name_str + '_sOptW-{}'.format(shift_opt_w) if sparq_w else name_str
-    name_str = name_str + '_grpSZx-{}'.format(group_sz_x) if sparq_x else name_str
-    name_str = name_str + '_grpSZw-{}'.format(group_sz_w) if sparq_w else name_str
     name_str = name_str + '_noBN' if skip_bn_recal else name_str
     name_str = name_str + '_unfold' if is_unfold else name_str
     name_str = name_str + '_{}'.format(desc) if desc is not None else name_str
@@ -169,9 +150,7 @@ def main():
         inference(arch, dataset, train_gen, test_gen,
                   model_chkp=model_chkp,
                   x_bits=args.x_bits, w_bits=args.w_bits,
-                  sparq_x=args.sparq_x, sparq_w=args.sparq_w,
-                  is_round=(args.round_mode == 'ROUND'), shift_opt_x=args.shift_opt_x, shift_opt_w=args.shift_opt_w,
-                  group_sz_x=args.group_sz_x, group_sz_w=args.group_sz_w,
+                  is_round=(args.round_mode == 'ROUND'),
                   skip_bn_recal=args.skip_bn_recal, is_unfold=args.unfold, desc=args.desc)
 
     return
