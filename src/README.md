@@ -11,7 +11,7 @@ Pick PyTorch 1.5.1 with the appropriate CUDA version from the [official PyTorch 
 Then, install the other packages and our custom CUDA package:
 ```setup
 pip install -r requirements.txt
-cd cu_gemm_2x48
+cd cu_gemm_quant
 python ./setup install
 ```
 The ImageNet path, as well as the seeds used to achieve the paper's results, are configured in `Config.py`.  
