@@ -19,7 +19,6 @@ Throughout this work, we used Ubuntu 18.04, Python 3.6.9, and NVIDIA TITAN V GPU
 
 ## 8-bit Model Quantization
 
-SPARQ operates on top 8-bit models.
 To quantize the models, execute the following command:
 
 ```quantize
